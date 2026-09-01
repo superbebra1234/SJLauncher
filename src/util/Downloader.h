@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <cstdint>
 
 extern std::vector<McVersion> realMcVersions;
 extern std::atomic<bool> isDownloading;
@@ -21,5 +22,9 @@ extern std::atomic<int> downloadETASeconds;
 extern std::string downloadingCurrentFile;
 
 void FetchMinecraftVersions();
-void InstallInstanceThread(std::string name, std::string versionId, std::string versionUrl, std::string loader);
-bool DownloadFile(const std::string& url, const std::filesystem::path& destPath);
+void InstallInstanceThread(std::string name, std::string versionId, std::string versionUrl, std::string loader, std::string group = "");
+
+// sha1/size - опциональные, для проверки целостности после скачивания (пусто/0 = не проверять).
+// Делает до 3 попыток, при ошибке хэша/размера перекачивает файл заново.
+bool DownloadFile(const std::string& url, const std::filesystem::path& destPath,
+                   const std::string& expectedSha1 = "", uint64_t expectedSize = 0);
