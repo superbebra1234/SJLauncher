@@ -15,16 +15,11 @@ find_package(cpr CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(libzip CONFIG REQUIRED)
 
+# Включаем папку src для заголовочных файлов
 include_directories(src)
 
+# ИСПОЛЬЗУЕМ GLOB_RECURSE, ЧТОБЫ НАЙТИ ВСЕ СРР-ФАЙЛЫ ВО ВЛОЖЕННЫХ ПАПКАХ
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 add_executable(SJLauncher ${SOURCES})
 
-target_link_libraries(SJLauncher PRIVATE
-    glfw
-    imgui::imgui
-    OpenGL::GL
-    cpr::cpr
-    nlohmann_json::nlohmann_json
-    libzip::zip
-)
+target_link_libraries(SJLauncher PRIVATE glfw imgui::imgui OpenGL::GL cpr::cpr nlohmann_json::nlohmann_json libzip::zip)
