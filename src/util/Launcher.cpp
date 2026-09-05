@@ -13,6 +13,7 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+// Глобальные переменные
 std::vector<MyInstance> myInstancesList;
 std::atomic<bool> needReloadInstances{false};
 
@@ -27,7 +28,7 @@ static int GetSystemRamMb() {
     if (GlobalMemoryStatusEx(&status)) {
         return (int)(status.ullTotalPhys / (1024 * 1024));
     }
-    return 8192; 
+    return 8192; // разумное значение по умолчанию
 }
 
 fs::path GetInstancesRootDir() {
@@ -43,6 +44,7 @@ static fs::path GetGroupsFilePath() {
     return GetInstancesRootDir() / "instgroups.json";
 }
 
+// ─── Управление группами ───────────────────────────────────────────────────────
 static nlohmann::ordered_json LoadGroupsRaw() {
     fs::path p = GetGroupsFilePath();
     if (!fs::exists(p)) return nlohmann::ordered_json{{"formatVersion", "1"}, {"groups", nlohmann::ordered_json::object()}};
@@ -136,6 +138,7 @@ void DeleteGroup(const std::string& group) {
     needReloadInstances = true;
 }
 
+// ─── Настройки инстансов (Overrides & Notes) ──────────────────────────────────
 static fs::path GetInstanceSettingsPath(const std::string& name) {
     return GetInstanceDir(name) / "instance_settings.json";
 }
@@ -194,6 +197,7 @@ void SaveInstanceNotes(const std::string& name, const std::string& notes) {
     } catch (...) {}
 }
 
+// ─── Управление файлами инстанса (Rename, Duplicate, Delete) ──────────────────
 bool RenameInstance(const std::string& oldName, const std::string& newName, std::string* errorOut) {
     if (oldName == newName) return true;
     if (newName.empty()) { if (errorOut) *errorOut = "Имя не может быть пустым"; return false; }
@@ -298,18 +302,17 @@ void LoadMyInstances() {
     }
 }
 
+// ─── Подготовка к запуску ─────────────────────────────────────────────────────
 static std::string BuildClasspath(const json& verData, const fs::path& libsDir, const fs::path& clientJar) {
     std::string classpath;
     if (verData.contains("libraries")) {
         for (const auto& lib : verData["libraries"]) {
             if (lib.contains("rules") && !VersionUtils::RulesAllow(lib["rules"])) continue;
             
-            // Если есть artifact path
             if (lib.contains("downloads") && lib["downloads"].contains("artifact")) {
                 fs::path p = libsDir / lib["downloads"]["artifact"].value("path", "");
                 if (fs::exists(p)) classpath += p.string() + ";";
             }
-            // Если это библиотека Fabric/Forge (Maven стиль)
             else if (lib.contains("name")) {
                 std::string name = lib["name"];
                 size_t colon1 = name.find(':');
@@ -343,6 +346,19 @@ static fs::path ResolveAssetsRoot(const fs::path& assetsDir, const fs::path& mcD
     return assetsDir;
 }
 
+// Ищет скачанную Java внутри папки runtimes
+static std::string FindJavaInRuntime(int majorVersion) {
+    fs::path dir = GetExeDir() / "runtimes" / ("java-" + std::to_string(majorVersion));
+    if (!fs::exists(dir)) return "";
+    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+        if (entry.is_regular_file() && entry.path().filename() == "java.exe") {
+            return entry.path().string();
+        }
+    }
+    return "";
+}
+
+// ─── Запуск игры ──────────────────────────────────────────────────────────────
 void LaunchGame(const MyInstance& inst) {
     fs::path basePath = GetInstanceDir(inst.name);
     fs::path mcDir = basePath / ".minecraft";
@@ -371,7 +387,6 @@ void LaunchGame(const MyInstance& inst) {
     std::string assetsIndexId = verData.contains("assetIndex") ? verData["assetIndex"].value("id", "legacy")
                                                                  : verData.value("assets", "legacy");
     fs::path assetsRoot = ResolveAssetsRoot(assetsDir, mcDir, assetsIndexId);
-
     std::string classpath = BuildClasspath(verData, libsDir, clientJar);
 
     std::map<std::string, std::string> vars = {
@@ -390,7 +405,7 @@ void LaunchGame(const MyInstance& inst) {
         {"auth_xuid", "0"},
         {"natives_directory", nativesDir.string()},
         {"launcher_name", "SJLauncher"},
-        {"launcher_version", "1.0"},
+        {"launcher_version", "2.0"},
         {"classpath", classpath},
         {"classpath_separator", ";"},
         {"library_directory", libsDir.string()},
@@ -425,18 +440,37 @@ void LaunchGame(const MyInstance& inst) {
             : (int)(GetSystemRamMb() * (currentSettings.memPercent / 100.0)));
     std::string effectiveJavaArgs = ov.overrideJava ? ov.javaArgs : currentSettings.javaArgs;
     
-    // Получение пути к Java
-    std::string effectiveJavaPath = ov.overrideJava ? ov.javaPath : currentSettings.javaPath;
-    std::string javaExe = "java"; // Дефолт, если прописано в переменных среды (PATH)
+    // ==========================================
+    // ЛОГИКА ВЫБОРА JAVA (Auto-Detect)
+    // ==========================================
+    std::string javaExe = "java"; 
     
-    if (!effectiveJavaPath.empty() && fs::exists(effectiveJavaPath)) {
-        javaExe = "\"" + effectiveJavaPath + "\"";
+    int requiredJava = 8;
+    if (verData.contains("javaVersion") && verData["javaVersion"].contains("majorVersion")) {
+        requiredJava = verData["javaVersion"]["majorVersion"].get<int>();
     } else {
-        char* javaHome = getenv("JAVA_HOME");
-        if (javaHome) {
-            fs::path p = fs::path(javaHome) / "bin" / "java.exe";
-            if (fs::exists(p)) javaExe = "\"" + p.string() + "\"";
+        if (inst.mc_version.find("1.17") != std::string::npos) requiredJava = 16;
+        else if (inst.mc_version.find("1.18") != std::string::npos || inst.mc_version.find("1.19") != std::string::npos || inst.mc_version.find("1.20") != std::string::npos) requiredJava = 17;
+        else if (inst.mc_version.find("1.21") != std::string::npos) requiredJava = 21;
+    }
+
+    if (currentSettings.autoDetectJava && !ov.overrideJava) {
+        std::string downloadedJava = FindJavaInRuntime(requiredJava);
+        if (!downloadedJava.empty()) {
+            javaExe = "\"" + downloadedJava + "\"";
+        } else {
+            char* javaHome = getenv("JAVA_HOME");
+            if (javaHome) {
+                fs::path p = fs::path(javaHome) / "bin" / "java.exe";
+                if (fs::exists(p)) javaExe = "\"" + p.string() + "\"";
+            }
         }
+    } 
+    else if (ov.overrideJava && !ov.javaPath.empty()) {
+        javaExe = "\"" + ov.javaPath + "\"";
+    } 
+    else if (!currentSettings.javaPath.empty()) {
+        javaExe = "\"" + currentSettings.javaPath + "\"";
     }
 
     std::string customFlags = "-Xmx" + std::to_string(effectiveRamMb) + "M";
@@ -454,9 +488,7 @@ void LaunchGame(const MyInstance& inst) {
 
     std::string fullCmd = javaExe + " " + jvmArgs + " " + mainClass + " " + gameArgs;
 
-    // ---------------------------------------------------------
-    // УЛУЧШЕННЫЙ ЗАПУСК С ЛОГИРОВАНИЕМ И КОНСОЛЬЮ (start.bat)
-    // ---------------------------------------------------------
+    // Генерация start.bat для безопасного запуска
     fs::path batPath = mcDir / "start.bat";
     std::ofstream batFile(batPath);
     batFile << "@echo off\n";
@@ -476,9 +508,8 @@ void LaunchGame(const MyInstance& inst) {
     STARTUPINFOA si = { sizeof(si) }; 
     PROCESS_INFORMATION pi = {};
 
-    // Запускаем bat файл. Если игра упадет, консоль останется открытой с надписью "pause"
     if (!CreateProcessA(nullptr, cmdBuffer.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, mcDir.string().c_str(), &si, &pi)) {
-        MessageBoxA(NULL, "Критическая ошибка запуска (CreateProcessA failed)!", "Ошибка", MB_ICONERROR);
+        MessageBoxA(NULL, "Критическая ошибка запуска (CreateProcessA)!", "Ошибка", MB_ICONERROR);
     } else {
         CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     }
